@@ -1,0 +1,6 @@
+{
+  "name": "live-typing",
+  "description": "Claude Code mod: Claude's work types out live above the prompt",
+  "owner": { "name": "Dangis" },
+  "plugins": [{ "name": "live-typing", "source": "./" }]
+}
