@@ -289,3 +289,37 @@ test('the typed part never ends in half an emoji', async ($, on) => {
   }
   expect(lone).toBe(0)
 })
+
+// The engine skips a band whose Text or Code holds a control character other than tab and newline
+// ("a text child holds a control character (an escape sequence)"). Command output often has escape
+// sequences beyond colours: window titles, links, charset and cursor codes.
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
+test('escape sequences from a command, its input or a reply never reach the band', async ($, on) => {
+  const clock = engine(on, [[
+    { kind: 'text', index: 0, text: 'Checking the \x1b[1mbuild\x1b[0m\x07 now.' },
+    { kind: 'tool', index: 1, id: 'esc1', name: 'Bash' },
+    { kind: 'input', index: 1, json: '{"command":"printf \\"\\u001b[31mred\\b\\f\\"","description":"Colour \\u001b]0;title\\u0007test"}' },
+    { kind: 'stop', stopReason: 'tool_use', usage: null },
+  ]], {}, [], () => ({
+    result: {
+      stdout: '\x1b]0;C:\\WINDOWS\\system32\\cmd.exe\x07\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\ ready\r\n\x1b(B\x1b[mbuild \x1b[>4;2mok\x1b7\x1b8\x00\n',
+      stderr: '',
+    },
+  }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 'main' })
+  const shown: Array<string | null> = []
+  for await (const _ of $.turn.step({ turnId: 'main', index: 0, model: 'm', messageCount: 1 })) {
+    await clock.advance(40)
+    shown.push(await band($))
+  }
+  await clock.advance(400)
+  shown.push(await band($))
+  await $.tool.call({ tool: 'Bash', command: 'printf red', description: 'Colour test', tool_use_id: 'esc1' } as any)
+  await clock.advance(200)
+  const after = await band($)
+  shown.push(after)
+  for (const s of shown) expect(s ?? '').not.toMatch(CONTROL)
+  expect(after).toContain('docs ready')
+  expect(after).toContain('build ok')
+})

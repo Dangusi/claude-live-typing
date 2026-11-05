@@ -304,7 +304,8 @@ function readMs(text: string) {
 // was quadratic: seconds of hook time on a 100 KB Write, out of the step's 10 s budget).
 type Scan = { from: number; at: number; out: string; done: boolean }
 const newScan = (): Scan => ({ from: 0, at: -1, out: '', done: false })
-const ESC: Record<string, string> = { n: '\n', t: '\t', r: '', b: '\b', f: '\f', '"': '"', '\\': '\\', '/': '/' }
+// \b, \f, \r and control characters given as \uXXXX are dropped: the band may draw none (see `clean`).
+const ESC: Record<string, string> = { n: '\n', t: '\t', r: '', b: '', f: '', '"': '"', '\\': '\\', '/': '/' }
 
 function scanField(json: string, key: string, s: Scan, max = Infinity): string | null {
   if (s.at < 0) {
@@ -330,7 +331,8 @@ function scanField(json: string, key: string, s: Scan, max = Infinity): string |
       const n = json[i + 1]!
       if (n === 'u') {
         if (i + 6 > json.length) break
-        s.out += String.fromCharCode(parseInt(json.slice(i + 2, i + 6), 16))
+        const code = parseInt(json.slice(i + 2, i + 6), 16)
+        if (drawable(code)) s.out += String.fromCharCode(code)
         i += 6
         continue
       }
@@ -338,14 +340,23 @@ function scanField(json: string, key: string, s: Scan, max = Infinity): string |
       i += 2
       continue
     }
-    if (c !== '\r') s.out += c
+    if (drawable(c.charCodeAt(0))) s.out += c
     i++
   }
   s.at = i
   return s.out
 }
 
-const oneLine = (s: string, n: number) => s.replace(/\s+/g, ' ').trim().slice(0, n)
+// The engine refuses (skips) a band whose Text or Code holds a control character other than tab and
+// newline. Command output carries escape sequences (colours, links, window titles, cursor moves), and
+// tool input or a reply can carry other control characters, so all outside text goes through here.
+const ESCAPES = /\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|\x1b\[[0-?]*[ -\/]*[@-~]?|\x1b[ -\/]*[0-~]?|\x9b[0-?]*[ -\/]*[@-~]?/g
+const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
+const clean = (s: string) => s.replace(ESCAPES, '').replace(CONTROLS, '')
+function drawable(code: number) {
+  return (code >= 0x20 && code < 0x7f) || code > 0x9f || code === 0x09 || code === 0x0a
+}
+const oneLine = (s: string, n: number) => clean(s.replace(/\s+/g, ' ')).trim().slice(0, n)
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? ''
 
 function findLive(text: string): Live | undefined {
@@ -439,7 +450,7 @@ async function learnName($: EngineInterface, agentId: string) {
   if (agentNames.get(agentId)) return
   try {
     for (const a of await $.agent.list()) {
-      const type = a.type && a.type !== 'general-purpose' && a.type !== 'teammate' ? a.type : ''
+      const type = a.type && a.type !== 'general-purpose' && a.type !== 'teammate' ? oneLine(a.type, TASK_CHARS) : ''
       const task = oneLine(a.description ?? '', TASK_CHARS)
       const label = [type, task].filter(Boolean).join(' · ')
       if (label) agentNames.set(a.id, label)
@@ -718,9 +729,9 @@ function outputTail(result: unknown): { tail: string[]; tailMore: number } {
   const r = result as Record<string, unknown>
   const text = [r.stdout, r.stderr].filter((s): s is string => typeof s === 'string' && s.trim() !== '').join('\n')
   const lines = text
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '') // colour codes
+    .replace(ESCAPES, '') // colours, links, window titles, cursor moves
     .split('\n')
-    .map((l) => (l.split('\r').filter((p) => p !== '').pop() ?? '').replace(/\t/g, '  ')) // a progress line keeps its last state
+    .map((l) => clean((l.split('\r').filter((p) => p !== '').pop() ?? '').replace(/\t/g, '  '))) // a progress line keeps its last state
     .filter((l) => l.trim() !== '')
   const tail = lines.slice(-TAIL_LINES).map((l) => l.slice(0, 300))
   return { tail, tailMore: lines.length - tail.length }
@@ -1060,13 +1071,13 @@ export const register: Register = (on) => {
             t.raw += c.text
             if (isLive) {
               const b = blocks.get(c.index) ?? (await open(c.index, 'text', '', '', ''))
-              b.target += c.text.replace(/\r/g, '')
+              b.target += clean(c.text)
               if (isMain) t.block = b
             }
           } else if (c.kind === 'thinking') {
             if (isLive && c.text) {
               const b = blocks.get(c.index) ?? (await open(c.index, 'think', '', '', ''))
-              b.target += c.text.replace(/\r/g, '')
+              b.target += clean(c.text)
             }
           } else if (c.kind === 'tool' && isLive) {
             const field = CODE_FIELDS[c.name]
@@ -1140,7 +1151,7 @@ export const register: Register = (on) => {
         for (const key of RUN_LABEL_FIELDS) {
           const v = input[key]
           if (typeof v === 'string' && v.trim()) {
-            label = key === 'file_path' || key === 'notebook_path' ? baseName(v) : oneLine(v, 120)
+            label = key === 'file_path' || key === 'notebook_path' ? oneLine(baseName(v), 120) : oneLine(v, 120)
             break
           }
         }
