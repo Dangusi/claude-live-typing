@@ -239,12 +239,26 @@ let pace: Pace = PACES.live // the main conversation's pace; agents always type 
 let restMode: 'on' | 'off' = 'on' // the remembered choice: what a demo goes back to
 let demoUsed = false // a model turn ran in demo mode
 let revertDemo = false // that turn ended: back to the remembered choice once the band is idle
-let bandHeight = 0 // rows the band takes now
-let lastShrinkAt = 0
-let easing = false // the band is still opening or closing: keep frames coming
-let drawnAt = 0 // when the band last drew itself
+// The band's size on one drawing surface. The band draws on the terminal and on the desktop app, and one
+// session can be open in both: each has its own room for the band, so each opens and closes its own (with
+// one size for both, the surface with less room held the other's band down to its own few rows).
+type Size = {
+  rows: number // rows the band takes now
+  shrunkAt: number // when it last opened or gave a row back
+  easing: boolean // still opening or closing: keep frames coming
+  drawnAt: number // when the band last drew itself there
+  snap: boolean // the band's reply text just moved into the transcript: give its rows back at once
+}
+const sizes = new Map<string, Size>()
+function sizeOf(surface: string): Size {
+  let s = sizes.get(surface)
+  if (!s) {
+    s = { rows: 0, shrunkAt: 0, easing: false, drawnAt: 0, snap: false }
+    sizes.set(surface, s)
+  }
+  return s
+}
 let shownAgent = '' // the agent the main view shows now
-let snapHeight = false // the band's reply text just moved into the transcript: give its rows back at once
 let timer: Timer | null = null
 let framing = false
 // Fullscreen (learned from this mod's own terminal drawings: the layout is fixed for a session). There the
@@ -272,18 +286,18 @@ function dropOrphans($: EngineInterface) {
   startTimer($)
 }
 
-// Moves the band's height a step toward `want`: open fast, close with an ease-out (at most 2 rows a draw).
-function easeToward(now: number, want: number) {
-  if (want > bandHeight) {
-    bandHeight = Math.min(want, bandHeight + GROW_ROWS)
-    lastShrinkAt = now
+// Moves a band's height a step toward `want`: open fast, close with an ease-out (at most 2 rows a draw).
+function easeToward(s: Size, now: number, want: number) {
+  if (want > s.rows) {
+    s.rows = Math.min(want, s.rows + GROW_ROWS)
+    s.shrunkAt = now
     return
   }
-  if (want < bandHeight) {
-    const steps = Math.min(2, Math.floor((now - lastShrinkAt) / shrinkEvery(bandHeight - want)))
+  if (want < s.rows) {
+    const steps = Math.min(2, Math.floor((now - s.shrunkAt) / shrinkEvery(s.rows - want)))
     if (steps > 0) {
-      bandHeight = Math.max(want, bandHeight - steps)
-      lastShrinkAt = now
+      s.rows = Math.max(want, s.rows - steps)
+      s.shrunkAt = now
     }
   }
 }
@@ -563,7 +577,7 @@ function stepFeed(f: Feed, now: number): Band | null {
       if (head.kind === 'text' && !inRow(head)) {
         // The transcript now holds this text (and types the rest in place): the band hands its rows
         // over in the same instant, so nothing jumps, and keeps no dim copy of it.
-        snapHeight = true
+        for (const s of sizes.values()) s.snap = true
         if (f.lastBand?.block?.kind === 'text') {
           f.lastBand = null
           f.lastBandKey = ''
@@ -665,9 +679,10 @@ async function frame($: EngineInterface) {
     // the transcript reply still typing, and the band while it opens or closes, redraw on every frame
     for (const a of anims.values()) if (!a.finished && now - a.born > GIVE_UP_MS) a.finished = true
     const handing = [...anims.values()].some((a) => !a.finished)
-    // a band that is no longer drawn (collapsed with [-], a screen without the prompt) eases no more;
-    // drawn again, it starts the timer itself
-    const eases = easing && now - drawnAt < 1000
+    // a band that is no longer drawn (collapsed with [-], a screen without the prompt, a surface that left)
+    // eases no more; drawn again, it starts the timer itself
+    let eases = false
+    for (const s of sizes.values()) if (s.easing && now - s.drawnAt < 1000) eases = true
     // a reply typing in its own transcript row redraws on every frame; a row no message took over (an error,
     // an interrupt) lets its text go a little after its turn ended, as the engine dropped it
     for (const b of openRows) {
@@ -723,11 +738,19 @@ function mustWait() {
   return main.queue.some(typingOf)
 }
 
-// The last lines of a command's output, as a terminal would show them.
-function outputTail(result: unknown): { tail: string[]; tailMore: number } {
-  if (!result || typeof result !== 'object') return { tail: [], tailMore: 0 }
-  const r = result as Record<string, unknown>
-  const text = [r.stdout, r.stderr].filter((s): s is string => typeof s === 'string' && s.trim() !== '').join('\n')
+// The last lines of a command's output, as a terminal would show them. A command that worked answers with
+// its record (stdout, stderr). One that failed answers with the error the model reads instead, never the
+// record: its exit code, then what it printed. (Read from the record alone, a failed build showed its ✗
+// and nothing of why.)
+function outputTail(tool: string, res: { result?: unknown; text?: unknown; isError?: unknown }): { tail: string[]; tailMore: number } {
+  const r = res.result
+  let text = ''
+  if (r && typeof r === 'object') {
+    const o = r as Record<string, unknown>
+    text = [o.stdout, o.stderr].filter((s): s is string => typeof s === 'string' && s.trim() !== '').join('\n')
+  } else if (res.isError === true && tool in CODE_LANGS) {
+    text = typeof res.text === 'string' ? res.text : typeof r === 'string' ? r : ''
+  }
   const lines = text
     .replace(ESCAPES, '') // colours, links, window titles, cursor moves
     .split('\n')
@@ -1176,7 +1199,7 @@ export const register: Register = (on) => {
     if (run) {
       try {
         run.isError = 'deny' in res && typeof res.deny === 'string' ? true : !!res.isError
-        const out = 'result' in res ? outputTail(res.result) : { tail: [], tailMore: 0 }
+        const out = outputTail(e.tool, res)
         run.tail = out.tail
         run.tailMore = out.tailMore
         run.ended = await $.clock.now()
@@ -1341,31 +1364,32 @@ export const register: Register = (on) => {
     }
     const b = chosen
     const { Box, Text, Code, Button } = $.ui.resolve(e)
+    const size = sizeOf(String(e.surface)) // this surface's own band: its room is not another surface's
     if (!b || b.inflow || e.props.hasSurvey) {
       // The band is done (or the reply types in the transcript itself): close it a row at a time instead of
       // letting everything below jump at once.
-      if (snapHeight) {
-        snapHeight = false
-        bandHeight = 0 // the text moved into the transcript: its rows go at once, the transcript takes them
+      if (size.snap) {
+        size.snap = false
+        size.rows = 0 // the text moved into the transcript: its rows go at once, the transcript takes them
       }
-      if (e.props.hasSurvey || bandHeight <= 0) {
-        bandHeight = 0
-        easing = false
+      if (e.props.hasSurvey || size.rows <= 0) {
+        size.rows = 0
+        size.easing = false
         return next(e)
       }
-      let now = lastShrinkAt + SHRINK_MS
+      let now = size.shrunkAt + SHRINK_MS
       try {
         now = await $.clock.now()
       } catch {
         // no clock: just shrink on this draw
       }
-      drawnAt = now
-      easeToward(now, 0)
-      easing = bandHeight > 0
-      if (!easing) return next(e)
+      size.drawnAt = now
+      easeToward(size, now, 0)
+      size.easing = size.rows > 0
+      if (!size.easing) return next(e)
       await read($, tick)
       startTimer($)
-      return <Box flexDirection="column" height={bandHeight} />
+      return <Box flexDirection="column" height={size.rows} />
     }
     // The band may take about 40% of the window. It grows at once to fit what it shows, and gives back
     // empty rows one at a time, so nothing jumps and no gap is left under it.
@@ -1514,13 +1538,13 @@ export const register: Register = (on) => {
       )
     }
 
-    let now = lastShrinkAt + SHRINK_MS
+    let now = size.shrunkAt + SHRINK_MS
     try {
       now = await $.clock.now()
     } catch {
       // no clock: just shrink on this draw
     }
-    drawnAt = now
+    size.drawnAt = now
     if (folded) {
       body = null // the name row alone, with what the agent is doing
       used = 0
@@ -1529,14 +1553,14 @@ export const register: Register = (on) => {
     const shownAny = !!b.block || b.rows.length > 0
     const status = !header ? '' : b.note === 'finished ✓' ? b.note : folded ? (shownAny ? doingOf(b) : b.note || doingOf(b)) : ''
     const want = Math.max(1, Math.min(fullCap, used + (header ? 1 : 0)))
-    if (snapHeight) {
-      snapHeight = false
-      bandHeight = Math.min(bandHeight, want) // the text moved into the transcript: hand its rows over at once
+    if (size.snap) {
+      size.snap = false
+      size.rows = Math.min(size.rows, want) // the text moved into the transcript: hand its rows over at once
     }
-    easeToward(now, want)
-    bandHeight = Math.min(bandHeight, fullCap)
-    easing = bandHeight !== want
-    if (easing) {
+    easeToward(size, now, want)
+    size.rows = Math.min(size.rows, fullCap)
+    size.easing = size.rows !== want
+    if (size.easing) {
       await read($, tick) // redraw on the next frames until the band has given back its empty rows
       startTimer($)
     }
@@ -1544,7 +1568,7 @@ export const register: Register = (on) => {
     // The inner box keeps its natural size (no shrinking), so while the band slides it is cut off cleanly
     // instead of its rows being squeezed together.
     return (
-      <Box flexDirection="column" height={bandHeight} overflow="hidden">
+      <Box flexDirection="column" height={size.rows} overflow="hidden">
         <Box flexDirection="column" flexShrink={0}>
           {header && (
             // The agent's name; folded, what it is doing. ▾ hide / ▸ show folds just the agent's part

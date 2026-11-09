@@ -109,3 +109,27 @@ test('with nothing to show, the band leaves the engine its place', async ($, on)
   expect((await ui.find({ type: 'Text' }))?.text).toBe('ENGINE')
   await ui.unmount()
 })
+
+// The band draws on the terminal and on the desktop app, and one session can be open in both. Each has its
+// own room for the band, so each keeps its own height. (With one height for both, the one with less room
+// held the other's card down to its own few rows.)
+test("a smaller second surface drawing the same band does not hold the terminal's band down", async ($, on) => {
+  stateWith(on, bandOf({
+    block: block({ kind: 'code', tool: 'Write', path: '/src/a.ts', label: 'a.ts', source: code + '▌', totalLines: 30, startLine: 1 }),
+  }))
+  const draw = async (surface: string, maxRows: number) => {
+    const ui = await $.ui.mount({ ...props(maxRows, 75), surface, requestId: 'above-' + surface } as any)
+    const tree: any = await ui.drawn()
+    await ui.unmount()
+    return tree.props.height as number
+  }
+  let terminal = 0
+  let desktop = 0
+  for (let i = 0; i < 12; i++) {
+    // both redraw on every frame
+    terminal = await draw('terminal', 40)
+    desktop = await draw('desktop', 8)
+  }
+  expect(terminal).toBe(capOf(40)) // 16 rows: the whole card
+  expect(desktop).toBe(capOf(8)) // 4 rows: all the room the other one has
+})

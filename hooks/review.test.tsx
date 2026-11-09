@@ -53,7 +53,7 @@ const PANE = {
 async function band($: any, cols = 100) {
   const ui = await $.ui.mount({
     plugin: 'live-typing', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
-    props: { hasSurvey: false, isWorking: true, maxRows: 40, bodyColumns: cols, scroll: { offset: 0, bodyRows: 39 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 40, bodyColumns: cols, scroll: { offset: 0, bodyRows: 39 }, view: {} },
   })
   const texts = (await ui.findAll({ type: 'Text' })).map((t: any) => String(t.text))
   await ui.unmount()
@@ -152,7 +152,7 @@ test('a reply with ✅ and 🚀 fits the band: no row wider than the window', as
   const cols = 60
   const ui = await $.ui.mount({
     plugin: 'live-typing', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
-    props: { hasSurvey: false, isWorking: true, maxRows: 40, bodyColumns: cols, scroll: { offset: 0, bodyRows: 39 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 40, bodyColumns: cols, scroll: { offset: 0, bodyRows: 39 }, view: {} },
   })
   const rows = (await ui.findAll({ type: 'Text' })).map((t: any) => String(t.text)).filter((t: string) => t.length > 2 && (t.startsWith('● ') || t.startsWith('  ')))
   await ui.unmount()

@@ -1,6 +1,6 @@
 {
   "name": "live-typing",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Shows Claude's work live above the prompt: replies, thinking, code and commands type out letter by letter as they stream",
   "author": { "name": "Dangis" },
   "license": "MIT",

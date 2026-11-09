@@ -153,7 +153,7 @@ test('a Write streamed in small pieces types its file name and code into the car
   await waitOut(clock, 1000)
   const ui = await $.ui.mount({
     plugin: 'live-typing', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
-    props: { hasSurvey: false, isWorking: true, maxRows: 30, bodyColumns: 100, scroll: { offset: 0, bodyRows: 29 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 30, bodyColumns: 100, scroll: { offset: 0, bodyRows: 29 }, view: {} },
   })
   const code = await ui.find({ type: 'Code' })
   const header = await ui.find({ type: 'Text', text: /hello\.ts/ })

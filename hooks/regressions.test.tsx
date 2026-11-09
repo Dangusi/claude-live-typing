@@ -323,3 +323,48 @@ test('escape sequences from a command, its input or a reply never reach the band
   expect(after).toContain('docs ready')
   expect(after).toContain('build ok')
 })
+
+// What the engine answers for a command that failed: the error the model reads (its exit code, then what
+// it printed), as `text` and as a string `result`; never the record with stdout and stderr.
+const failed = (said: string) => () => ({ result: 'Error: ' + said, text: said, isError: true })
+
+async function runTool($: any, clock: any, tool: string, id: string, input: Record<string, unknown>) {
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 'main' })
+  for await (const _ of $.turn.step({ turnId: 'main', index: 0, model: 'm', messageCount: 1 })) {
+  }
+  await clock.advance(400)
+  await $.tool.call({ tool, ...input, tool_use_id: id } as any)
+  await clock.advance(200)
+  return band($)
+}
+
+for (const tool of ['Bash', 'PowerShell']) {
+  test(`a ${tool} command that failed shows its exit code and what it printed, not just ✗`, async ($, on) => {
+    const input = { command: 'npm run build', description: 'Build it' }
+    const clock = engine(on, [[
+      { kind: 'tool', index: 0, id: 'f1', name: tool },
+      { kind: 'input', index: 0, json: JSON.stringify(input) },
+      { kind: 'stop', stopReason: 'tool_use', usage: null },
+    ]], {}, [], failed('Exit code 3\nCompiling 12 files\r\nsrc/a.ts(4,7): error TS2304: Cannot find name \x1b[31mfoo\x1b[0m.'))
+    const after = await runTool($, clock, tool, 'f1', input)
+    expect(after).toContain('✗')
+    expect(after).toContain('Exit code 3')
+    expect(after).toContain('Compiling 12 files')
+    expect(after).toContain('Cannot find name foo.')
+    expect(after ?? '').not.toMatch(CONTROL)
+  })
+}
+
+test('a failed tool that is no command keeps its one row: its error is not shown as output', async ($, on) => {
+  const input = { file_path: '/nope/missing.txt' }
+  const clock = engine(on, [[
+    { kind: 'tool', index: 0, id: 'r1', name: 'Read' },
+    { kind: 'input', index: 0, json: JSON.stringify(input) },
+    { kind: 'stop', stopReason: 'tool_use', usage: null },
+  ]], {}, [], failed('File does not exist.'))
+  const after = await runTool($, clock, 'Read', 'r1', input)
+  expect(after).toContain('Read')
+  expect(after).toContain('missing.txt')
+  expect(after).not.toContain('File does not exist')
+})

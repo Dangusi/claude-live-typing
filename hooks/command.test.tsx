@@ -253,7 +253,7 @@ test('a fresh store: typing on, agents off in the main view (their own view stil
   expect(await band($)).toBe(null)
   const ui = await $.ui.mount({
     plugin: 'live-typing', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
-    props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 100, scroll: { offset: 0, bodyRows: 29 }, view: { agentId: 'a1' } },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 30, bodyColumns: 100, scroll: { offset: 0, bodyRows: 29 }, view: { agentId: 'a1' } },
   })
   expect((await ui.findAll({ type: 'Text' })).map((t: any) => t.text).join(' ')).toContain('Reading')
   await ui.unmount()
